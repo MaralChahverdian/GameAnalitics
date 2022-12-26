@@ -1,0 +1,425 @@
+---
+title: "NBA_Project"
+author: "Arsen, Gohar, Martin, Maral"
+date: "4/19/2018"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(FactoMineR)
+library(factoextra)
+library(ggplot2)
+library(lattice)
+library(caret)
+library(ROCR)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(RColorBrewer)
+library(class)
+library(gplots)
+library(e1071)
+```
+##Data Discreption 
+Data - 2014-2016 NBA Games
+The goal is to find out which factors affect on the result of the game, so that we can give recommendation to coaches.
+
+The first step is to clean the data. We've decided to choose games for 2014-2016 years.
+We've also eliminated some variables which have high correation with the variables we are going to use in the analysis. Highly correlated variables won't play any efficent role.
+
+```{r}
+nba <- read.csv('all_MBA.csv')
+nba$W_L<- ifelse(nba$PLUS_MINUS>0, "W", "L")
+c1 <- c(2014:2016)
+nba <- nba[nba$Season %in% c1,]
+
+#Eleminating high correlated variables
+
+nba <- nba[,-c(1:6,10:18,23:27,52:54,29:51,58,64,67,70,78,79,81,83)]
+```
+
+In this step we've simplified the dataset using Principal Components Analysis(PCA). We've chosen 9 dimensions, where cumulative proportion of variance is ~80%.
+
+```{r, eval = FALSE}
+
+nba_pca <- nba[,-c(29,30)]
+pca1<-PCA(nba_pca,graph=F,ncp=9)
+
+```
+
+Converting our dataset to dataframe.
+
+```{r}
+nba_pca <- as.data.frame(scale(nba_pca),center=T,scale=T)
+nba_pc<- prcomp(nba_pca,center = T,scale=T)
+```
+
+Visuaizing and giving names to the dimensions. The names are chosen by the logic which combines them in one dimension.
+Dim1 - Team Points
+Dim2 - Free Throws
+Dim3 - Rebounds
+Dim4 - 2-point Throws
+Dim5 - Defence
+Dim6 - 3-point Throws
+Dim7 - Leading Distribution in Match Points
+Dim8 - Loosing the Ball After 3-point Throw Attempts
+Dim9 - Points After Fast Break
+
+
+
+```{r}
+fviz_contrib(nba_pc,choice = 'var',axes=1)
+fviz_contrib(nba_pc,choice = 'var',axes=2)
+fviz_contrib(nba_pc,choice = 'var',axes=3)
+fviz_contrib(nba_pc,choice = 'var',axes=4)
+fviz_contrib(nba_pc,choice = 'var',axes=5)
+fviz_contrib(nba_pc,choice = 'var',axes=6)
+fviz_contrib(nba_pc,choice = 'var',axes=7)
+fviz_contrib(nba_pc,choice = 'var',axes=8)
+fviz_contrib(nba_pc,choice = 'var',axes=9)
+
+nba_pca1 <-as.data.frame(pca1$ind$coord)
+colnames(nba_pca1) <- c("Tm_Pts", "FT", "Reb", "Pts_2", "Def", "Pts_3", "lead_dist","L_b_3Pts", "FB_Pts" )
+
+```
+
+##PCA Graphs and clusters
+We have ploted our data and see the corrolation between our data,the closest point to axes shows that there is higher corrolation.After creating several plot model we did the clustering of our pca model.
+
+
+```{r}
+a<-dimdesc(pca1,axes=c(1:2))
+plot(pca1,choix="var",invisible = "quanti.sup")
+
+
+plot(pca1,choix="var",invisible = "quanti.sup",select = "Retail")
+
+plot(pca1,choix="var",invisible = "quanti.sup",axes = c(2:3))
+
+fviz_screeplot(pca1,addlabels=TRUE)
+fviz_pca_var(pca1,col.var = "black")
+
+
+pca_scores <- pca1$ind$coord
+
+pca_scores <- pca_scores[,1:2]
+
+km.r<- kmeans(pca_scores,centers = 4)
+fviz_cluster(km.r,data = pca_scores)
+
+nba_pca$cluster <-km.r$cluster
+aggregate(nba_pca ,list(nba_pca $cluster),mean)
+```
+
+##Logistc Regression
+Applying Logistic Regression analisys on the PCA data
+
+In NBA the fact that team is playing on his Home field has an impact on the outcome of the game. That's why we are selecting only the games that are played in Home field.
+
+```{r}
+#Adding Win / Lose and Home / Away factors
+nba_pca1$W_L<- nba$W_L
+nba_pca1$H_A<-nba$H
+
+#Finging proportion of wins and loses
+W_L<-factor(nba$W_L)
+
+#Home field games.
+Field_info<- nba_pca1[nba_pca1$H_A == "H",]
+
+#Finding the probabilities
+prop.table(table(Field_info$H, Field_info$W_L),1)
+
+#Converting factors into numeric data
+H_A <-as.factor(nba_pca1$H_A)
+Info <- nba_pca1[nba_pca1$H_A == "H",]
+nba_pca1$H_A<- ifelse(nba_pca1$H_A == "H", "1", "0")
+nba_pca1$H_A<- as.numeric(nba_pca1$H_A)
+
+nba_pca1$W_L<- ifelse(nba_pca1$W_L == "W", "1", "0")
+nba_pca1$W_L<- as.numeric(nba_pca1$W_L)
+
+#Predicting Wins and Loses with independent variables Home / Away using Generalized Logistic Model
+
+model_log_reg <-glm(W_L~ H_A , data=nba_pca1,family = "binomial")
+
+
+coef(model_log_reg)
+#0.33 log odds
+exp(coef(model_log_reg))
+#0.72 odds
+
+Index_log_reg<-createDataPartition(nba_pca1$W_L, p=0.65,list=F)
+Train_log_reg<-nba_pca1[Index_log_reg,]
+Test_log_reg<-nba_pca1[-Index_log_reg,]
+
+pred_test_log_reg<-predict(model_log_reg, newdata = Test_log_reg, type = "response")
+
+pr_label_log_reg <- ifelse(pred_test_log_reg>0.5, "1", "0")
+table(pr_label_log_reg, Test_log_reg$W_L)
+
+confusionMatrix(pr_label_log_reg, Test_log_reg$W_L, positive = "1")
+
+#The accuracy is ~57%
+#Sensitivity ~58% - Given that the team has won the game, there is 58% probability that the model will predict that.        
+#Specificity ~57% - Given that the team has lost the game, there is 57% probability that the model will predict that.
+#Positive Predictive Value ~57%        
+#Negative Predictive Value ~57%
+
+P_Test_log_reg<- prediction(pred_test_log_reg,Test_log_reg$W_L)
+pref_log_reg <-performance(P_Test_log_reg,"tpr","fpr")
+plot(pref_log_reg,colorize=T)
+performance(P_Test_log_reg,"auc")@y.values
+
+#2nd model: In this model we took as our independent variables following dimentions rebound,defence,losing ball,after 3 point attempt and fastbreak points.These dimentions are related with defencive actions,thus we want to understand how defence can affect on game result. 
+
+model_log_reg2<-glm(W_L~ Reb+Def+L_b_3Pts+FB_Pts, data = Test_log_reg,                                                    family = "binomial")
+model_log_reg2
+
+coef(model_log_reg2)
+#0.01 log odds
+exp(coef(model_log_reg2))
+#1.01 odds
+
+pred_test2<-predict(model_log_reg2, newdata = Test_log_reg, type = "response")
+
+pr_label2 <- ifelse(pred_test2>0.65, "1", "0")
+table(pr_label2, Test_log_reg$W_L)
+
+confusionMatrix(pr_label2, Test_log_reg$W_L, positive = "1")
+
+#The accuracy is ~68%
+#Sensitivity ~47%         
+#Specificity ~88% 
+#Positive Predictive Value ~80%        
+#Negative Predictive Value ~62%
+
+P_Test_log_reg2<- prediction(pred_test2,Test_log_reg$W_L)
+pref_log_reg2 <-performance(P_Test_log_reg2,"tpr","fpr")
+plot(pref_log_reg2,colorize=T)
+performance(P_Test_log_reg2,"auc")@y.values
+```
+
+##Navie Bayes
+Applying Navie Bayes analisys on normal data
+In first navie bayes model we check how field information affects on game result.
+```{r}
+set.seed(1)
+Index_b<-createDataPartition(nba$W_L, p=0.65,list=F)
+Train_b<-nba[Index_b,]
+Test_b<-nba[-Index_b,]
+
+
+model_b <- naiveBayes(W_L~H , data = Test_b, laplace = 3)
+
+#confusion matrix
+pred_test_b <- predict(model_b, newdata = Test_b[,-30])
+pred_test_prob_b <- predict(model_b,newdata = Test_b[,-30] ,type = "raw")
+pr_label_b <- ifelse(pred_test_prob_b[,2] > 0.5, "W", "L")
+
+
+confusionMatrix(pr_label_b, Test_b$W_L, positive = "W")
+
+#The accuracy is ~57%
+#Sensitivity ~57%         
+#Specificity ~58% 
+#Positive Predictive Value ~57%        
+#Negative Predictive Value ~57%
+
+#showing the prob for the bayes model
+p_test_b <- prediction(pred_test_prob_b[,2],Test_b$W_L)
+pref_b<- performance(p_test_b,"tpr","fpr")
+plot(pref_b)
+
+performance(p_test_b,"auc")@y.values
+
+```
+
+in the second Naive bayes model, as in second logistic regression model, we took defence related variables as our independant variables.    
+```{r}
+set.seed(1)
+Index_b2<-createDataPartition(nba$W_L, p=0.65,list=F)
+Train_b2<-nba[Index_b2,]
+Test_b2<-nba[-Index_b2,]
+
+
+model_b2 <- naiveBayes(W_L~DREB+STL+BLK+PTS_OFF_TO+PTS_FB  , data = Test_b2, laplace = 3)
+
+#confusion matrix
+pred_test_b2 <- predict(model_b2, newdata = Test_b2[,-30])
+pred_test_prob_b2 <- predict(model_b2,newdata = Test_b2[,-30] ,type = "raw")
+pr_label_b2 <- ifelse(pred_test_prob_b2[,2] > 0.65, "W", "L")
+
+
+confusionMatrix(pr_label_b2, Test_b2$W_L, positive = "W")
+
+#The accuracy is ~66%
+#Sensitivity ~44%         
+#Specificity ~88% 
+#Positive Predictive Value ~78%        
+#Negative Predictive Value ~61%
+
+#showing the prob for the bayes model
+p_test_b2 <- prediction(pred_test_prob_b2[,2],Test_b2$W_L)
+pref_b2<- performance(p_test_b2,"tpr","fpr")
+plot(pref_b2)
+
+performance(p_test_b2,"auc")@y.values
+
+```
+In this part we creat 2 models related to attacing actions.In our model we try to understand what action is more preferable after offencive rebound. For understanting all of these statments we created model 3 which shows  how offencive rebound and made 3 points affected on game result and the model 4 shows how offencive rebound and second chance point affected on game result.Afer compairing results of two models we find out that teams should try to make 3 points after offencive rebound.
+
+```{r}
+set.seed(1)
+Index_b3<-createDataPartition(nba$W_L, p=0.65,list=F)
+Train_b3<-nba[Index_b3,]
+Test_b3<-nba[-Index_b3,]
+
+
+model_b3 <- naiveBayes(W_L~OREB+FG3M, data = Test_b3, laplace = 3)
+model_b4 <- naiveBayes(W_L~OREB+PTS_2ND_CHANCE, data = Test_b3, laplace = 3)
+#confusion matrix for model_b3
+pred_test_b3 <- predict(model_b3, newdata = Test_b3[,-30])
+pred_test_prob_b3 <- predict(model_b3,newdata = Test_b3[,-30] ,type = "raw")
+pr_label_b3 <- ifelse(pred_test_prob_b3[,2] > 0.5, "W", "L")
+
+confusionMatrix(pr_label_b3, Test_b3$W_L, positive = "W")
+
+#The accuracy is ~59%
+#Sensitivity ~46%         
+#Specificity ~72% 
+#Positive Predictive Value ~62%        
+#Negative Predictive Value ~57%
+
+
+#showing the prob for the bayes model_b3
+p_test_b3 <- prediction(pred_test_prob_b3[,2],Test_b$W_L)
+pref_b3<- performance(p_test_b3,"tpr","fpr")
+plot(pref_b3)
+performance(p_test_b3,"auc")@y.values
+
+#confusion matrix for model_b4
+pred_test_b4 <- predict(model_b4, newdata = Test_b3[,-30])
+pred_test_prob_b4 <- predict(model_b4,newdata = Test_b3[,-30] ,type = "raw")
+pr_label_b4 <- ifelse(pred_test_prob_b4[,2] > 0.5, "W", "L")
+confusionMatrix(pr_label_b4, Test_b3$W_L, positive = "W")
+
+#The accuracy is ~55%
+#Sensitivity ~61%         
+#Specificity ~51% 
+#Positive Predictive Value ~55%        
+#Negative Predictive Value ~56%
+
+#showing the prob for the bayes model_b4
+p_test_b4 <- prediction(pred_test_prob_b4[,2],Test_b$W_L)
+pref_b4<- performance(p_test_b4,"tpr","fpr")
+plot(pref_b4)
+performance(p_test_b4,"auc")@y.values
+```
+##Decision Tree
+Applying Decision Tree analisys on the data
+
+Model1 is applied for all the variables.Created decision tree shows possible rules dependant on wining and losing factor. In the model node shows the number of the win and the lose 
+```{r}
+nba_des_tree<- nba[,-c(3)]
+
+set.seed(1)
+Index_des_tree<-createDataPartition(nba_des_tree$W_L,p=0.65,list=F)
+Train_des_tree<-nba_des_tree[Index_des_tree,]
+Test_des_tree<-nba_des_tree[-Index_des_tree,]
+
+
+model_des_tree1<-rpart(W_L~., data=Test_des_tree, method="class")
+model_des_tree1
+prp(model_des_tree1, type = 0, extra = 8)
+
+PredTrain_des_tree1<-predict(model_des_tree1,newdata = Test_des_tree, type="class")
+table(PredTrain_des_tree1,Test_des_tree$W_L)
+
+fancyRpartPlot(model_des_tree1)
+asRules(model_des_tree1)
+predclass1<-predict(model_des_tree1,Test_des_tree,type = "class")
+confusionMatrix(predclass1,Test_des_tree$W_L,positive = "W")
+#The accuracy is ~92%
+#Sensitivity ~94%
+#Specificity ~90%
+#Positive Predictive Value ~91%    
+#Negative Predictive Value ~94%
+
+pred_prob1<-predict(model_des_tree1,Test_des_tree,type = 'prob')
+
+p_test_des_tree1 <- prediction(pred_prob1[,2],Test_des_tree$W_L)
+pref_des_tree1 <- performance(p_test_des_tree1,"tpr","fpr")
+plot(pref_des_tree1,colorize=T)
+performance(p_test_des_tree1,"auc")@y.values
+```
+2nd model we take following  variables defencive rebound,points after turnover,assicts 3 point made and personal fall drawn.The reasone of choosing these are just estetic beatuy of the decsion tree, because we choose different variables that have conection with eachother but we dont get any certain rules that's why we choose random variables to have more than 5 rules in our tree.
+
+```{r}
+set.seed(1)
+Index_des_tree<-createDataPartition(nba_des_tree$W_L,p=0.65,list=F)
+Train_des_tree<-nba_des_tree[Index_des_tree,]
+Test_des_tree<-nba_des_tree[-Index_des_tree,]
+
+
+model_des_tree2<-rpart(W_L~DREB+PTS_OFF_TO+FG3M+AST+PFD, data=Test_des_tree, method="class")
+prp(model_des_tree2, type = 0, extra = 8)
+
+PredTrain_des_tree2<-predict(model_des_tree2,newdata = Test_des_tree, type="class")
+table(PredTrain_des_tree2,Test_des_tree$W_L)
+
+fancyRpartPlot(model_des_tree2)
+predclass2<-predict(model_des_tree2,Test_des_tree,type = "class")
+confusionMatrix(predclass2,Test_des_tree$W_L,positive = "W")
+#The accuracy is ~74%
+#Sensitivity ~70%
+#Specificity ~79%
+#Positive Predictive Value ~77%    
+#Negative Predictive Value ~72%
+
+pred_prob2<-predict(model_des_tree2,Test_des_tree,type = 'prob')
+
+p_test_des_tree2 <- prediction(pred_prob2[,2],Test_des_tree$W_L)
+pref_des_tree2 <- performance(p_test_des_tree2,"tpr","fpr")
+plot(pref_des_tree2,colorize=T)
+performance(p_test_des_tree2,"auc")@y.values
+```
+
+##KNN Analisys
+Applying KNN analisys on the data
+Created knn model with the win/lose factors, we choose 86 nearest neighbour with the helop of the plot(knn),we took the highest point as desierable number of neighbours to be compaired.
+
+```{r}
+nba_knn<-nba_pca1
+nba_knn$W_L<- ifelse(nba_knn$W_L == "1", "W", "L")
+
+set.seed(1)
+cntrl<- trainControl(method = "cv")
+knn<- train(W_L~., data = nba_knn, method = "knn", trControl=cntrl, preProcess= c("center","scale"), tuneLength=50)
+plot(knn)
+
+scaled<-as.data.frame(scale(x=nba_pca1,center=T, scale=T))
+
+
+set.seed(1)
+w_l_scaled<-cbind(W_L,scaled)
+
+Index_knn<-createDataPartition(w_l_scaled$W_L, p=0.65,list = F)
+Train_knn<-w_l_scaled[Index_knn,]
+Test_knn<- w_l_scaled[-Index_knn,]
+
+
+knn_1<-knn(Train_knn[,-1],Test_knn[,-1], cl=Train_knn$W_L, k=86)
+knn_2<-knn(Train_knn[,-1],Test_knn[,-1], cl=Train_knn$W_L, k=86,prob=T)
+DF_knn<-data.frame(class=knn_1, probs=attr(knn_2,"prob"))
+y<-ifelse(DF_knn[,1]=="Yes",DF_knn[,2],1-DF_knn[,2])
+
+Prediction_Test_knn <- prediction(y, Test_knn$W_L)
+performance_knn <- performance(Prediction_Test_knn, "tpr", "fpr")
+plot(performance_knn, colorize=T)
+
+performance(Prediction_Test_knn, "auc")@y.values
+```
